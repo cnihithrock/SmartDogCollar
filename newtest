@@ -1,0 +1,132 @@
+#include <Notecard.h>
+#include <Wire.h>
+#include "Adafruit_MCP9808.h"
+#define usbSerial Serial
+#define productUID "edu.purdue.nchaturv:smartcollar_53"
+#include <Wire.h>
+#include "MAX30105.h"
+#include "heartRate.h"
+MAX30105 particleSensor;
+const byte RATE_SIZE = 4; //Increase this for more averaging. 4 is good.
+byte rates[RATE_SIZE]; //Array of heart rates
+byte rateSpot = 0;
+long lastBeat = 0; //Time at which the last beat occurred
+float cnt = 0;
+Adafruit_MCP9808 tempsensor = Adafruit_MCP9808();
+
+float beatsPerMinute;
+int beatAvg;
+
+Notecard notecard;
+void setup() {
+  // put your setup code here, to run once:
+  Serial.print("penis");
+  delay(2500);
+  usbSerial.begin(9600);
+
+  while(!usbSerial);
+
+  notecard.begin();
+  notecard.setDebugOutputStream(usbSerial);
+  
+  
+  J *req = notecard.newRequest("hub.set");
+  JAddStringToObject(req, "product", productUID);
+  JAddStringToObject(req, "mode", "continuous");
+  notecard.sendRequest(req);
+  while (!Serial);
+  if (!tempsensor.begin(0x18)) {
+    Serial.println("Couldn't find MCP9808! Check your connections and verify the address is correct.");
+    while (1);
+  }
+   
+  Serial.println("Found MCP9808!");
+  tempsensor.setResolution(3);
+  
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) //Use default I2C port, 400kHz speed
+  {
+    Serial.println("MAX30105 was not found. Please check wiring/power. ");
+    while (1);
+  }
+  Serial.println("Place your index finger on the sensor with steady pressure.");
+
+  particleSensor.setup(); //Configure sensor with default settings
+  particleSensor.setPulseAmplitudeRed(0x0A); //Turn Red LED to low to indicate sensor is running
+  particleSensor.setPulseAmplitudeGreen(0); //Turn off Green LED
+  
+}
+
+
+
+void loop() {
+  
+  long irValue = particleSensor.getIR();
+  
+  if (checkForBeat(irValue) == true)
+  {
+    //We sensed a beat!
+    long delta = millis() - lastBeat;
+    lastBeat = millis();
+
+    beatsPerMinute = 60 / (delta / 1000.0);
+    
+    
+
+    if (beatsPerMinute < 255 && beatsPerMinute > 20)
+    {
+      rates[rateSpot++] = (byte)beatsPerMinute; //Store this reading in the array
+      rateSpot %= RATE_SIZE; //Wrap variable
+
+      //Take average of readings
+      beatAvg = 0;
+      for (byte x = 0 ; x < RATE_SIZE ; x++)
+        beatAvg += rates[x];
+      beatAvg /= RATE_SIZE;
+    }
+  }
+
+  Serial.print("IR=");
+  Serial.print(irValue);
+  Serial.print(", BPM=");
+  Serial.print(beatsPerMinute);
+  Serial.print(", Avg BPM=");
+  Serial.print(beatAvg);
+
+  if (irValue < 50000)
+    Serial.print(" No finger?");
+
+  Serial.println();
+  if (cnt > 500) 
+  {
+    tempsensor.wake();
+    Serial.print("Resolution in mode: ");
+    Serial.println (tempsensor.getResolution());
+    float c = tempsensor.readTempC();
+    float f = tempsensor.readTempF();
+    Serial.print("Temp: "); 
+    Serial.print(c, 4); Serial.print("*C\t and "); 
+    Serial.print(f, 4); Serial.println("*F.");
+  
+    delay(2000);
+    Serial.println("Shutdown MCP9808.... ");
+    tempsensor.shutdown_wake(1); // shutdown MSP9808 - power consumption ~0.1 mikro Ampere, stops temperature sampling
+    Serial.println("");
+    delay(200);
+    J *req = notecard.newRequest("note.add");
+    if (req != NULL)
+    {
+      JAddStringToObject(req, "file", "sensors.qo");
+      JAddBoolToObject(req, "sync", true);
+      J *body = JAddObjectToObject(req, "body");
+      if (body)
+      {
+        
+        JAddNumberToObject(body, "temp", f);
+        JAddNumberToObject(body, "heartrate", beatsPerMinute);
+      }
+      notecard.sendRequest(req);
+    } cnt = 0;
+  }
+  cnt= cnt+1;
+  Serial.print(cnt);
+ }
